@@ -131,7 +131,13 @@ AVATAR_ALLOWED_CONTENT_TYPES = {
 AVATAR_MAX_SIZE = 256
 
 
-@router.post("/user/avatar", response_model=Optional[UserModel])
+class AvatarUploadResponse(BaseModel):
+    url: str
+    width: int
+    height: int
+
+
+@router.post("/user/avatar", response_model=AvatarUploadResponse)
 async def upload_user_avatar_by_session_user(
     file: UploadFile = File(...),
     user=Depends(get_verified_user),
@@ -144,6 +150,8 @@ async def upload_user_avatar_by_session_user(
     (aspect ratio preserved via thumbnail scaling).
     Any previously stored avatar file for this user is replaced.
     The user's profile_image_url is updated to point to the new avatar.
+
+    Returns JSON: { "url": "/avatars/<filename>", "width": <int>, "height": <int> }
     """
     from PIL import Image
     import io
@@ -175,6 +183,8 @@ async def upload_user_avatar_by_session_user(
         if image.width > AVATAR_MAX_SIZE or image.height > AVATAR_MAX_SIZE:
             image.thumbnail((AVATAR_MAX_SIZE, AVATAR_MAX_SIZE), Image.LANCZOS)
 
+        final_width, final_height = image.width, image.height
+
         # ── 4. Remove any existing avatar file for this user ─────────────────
         for ext in ("png", "jpg", "webp"):
             old_path = os.path.join(AVATAR_DIR, f"{user.id}.{ext}")
@@ -200,16 +210,12 @@ async def upload_user_avatar_by_session_user(
 
         # ── 6. Update the user's profile_image_url in the database ───────────
         profile_image_url = f"/avatars/{avatar_filename}"
-        updated_user = Users.update_user_profile_image_url_by_id(
-            user.id, profile_image_url
-        )
+        Users.update_user_profile_image_url_by_id(user.id, profile_image_url)
 
-        if updated_user:
-            return updated_user
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.DEFAULT("Error updating profile image URL"),
+        return AvatarUploadResponse(
+            url=profile_image_url,
+            width=final_width,
+            height=final_height,
         )
 
     except HTTPException:

@@ -1,11 +1,15 @@
 """
-Integration tests for the POST /api/v1/users/user/avatar endpoint.
+Integration tests for the POST /api/avatar/upload endpoint.
 
 Covers:
 - Successful upload of PNG, JPEG, and WebP images
+- Response shape: { url, width, height }
 - Automatic resizing of oversized images (> 256×256)
-- Rejection of unsupported MIME types
+- Aspect ratio preservation during resize
+- Rejection of unsupported MIME types (HTTP 400)
 - Replacement of an existing avatar file on re-upload
+- DB profile_image_url updated after upload
+- Small images are not upscaled
 """
 
 import io
@@ -37,7 +41,7 @@ _FORMAT_MAP = {
 
 class TestAvatarUpload(AbstractPostgresTest):
 
-    BASE_PATH = "/api/v1/users"
+    BASE_PATH = "/api/avatar"
 
     def setup_class(cls):
         super().setup_class()
@@ -62,7 +66,7 @@ class TestAvatarUpload(AbstractPostgresTest):
     def _upload_avatar(self, user_id: str, image_bytes: bytes, content_type: str):
         with mock_webui_user(id=user_id):
             return self.fast_api_client.post(
-                self.create_url("/user/avatar"),
+                self.create_url("/upload"),
                 files={"file": ("avatar", image_bytes, content_type)},
             )
 
@@ -72,15 +76,23 @@ class TestAvatarUpload(AbstractPostgresTest):
 
     @pytest.mark.parametrize("content_type", list(_FORMAT_MAP.keys()))
     def test_upload_accepted_formats(self, content_type):
-        """PNG, JPEG, and WebP images should be accepted and stored."""
+        """PNG, JPEG, and WebP images should be accepted; response has url/width/height."""
         pil_fmt, ext = _FORMAT_MAP[content_type]
         image_bytes = _create_image_bytes(100, 100, pil_fmt)
 
         response = self._upload_avatar("user-avatar-1", image_bytes, content_type)
 
         assert response.status_code == 200, response.text
-        data = response.json()
-        assert data["profile_image_url"] == f"/avatars/user-avatar-1.{ext}"
+        body = response.json()
+
+        # Response must have the three expected properties
+        assert "url" in body
+        assert "width" in body
+        assert "height" in body
+
+        assert body["url"] == f"/avatars/user-avatar-1.{ext}"
+        assert body["width"] == 100
+        assert body["height"] == 100
 
         # The file must exist on disk
         from config import AVATAR_DIR
@@ -88,25 +100,21 @@ class TestAvatarUpload(AbstractPostgresTest):
         avatar_path = os.path.join(AVATAR_DIR, f"user-avatar-1.{ext}")
         assert os.path.isfile(avatar_path), f"Avatar file not found: {avatar_path}"
 
-        # Verify dimensions are within the 256×256 cap
-        with Image.open(avatar_path) as img:
-            assert img.width <= 256
-            assert img.height <= 256
-
     def test_upload_resizes_large_image(self):
-        """An image larger than 256×256 must be resized to fit within 256×256."""
+        """An image larger than 256×256 must be resized; response reflects new dims."""
         image_bytes = _create_image_bytes(512, 512, "PNG")
 
         response = self._upload_avatar("user-avatar-1", image_bytes, "image/png")
 
         assert response.status_code == 200, response.text
+        body = response.json()
+
+        assert body["width"] <= 256
+        assert body["height"] <= 256
 
         from config import AVATAR_DIR
 
-        avatar_path = os.path.join(AVATAR_DIR, "user-avatar-1.png")
-        assert os.path.isfile(avatar_path)
-
-        with Image.open(avatar_path) as img:
+        with Image.open(os.path.join(AVATAR_DIR, "user-avatar-1.png")) as img:
             assert img.width <= 256
             assert img.height <= 256
 
@@ -118,12 +126,10 @@ class TestAvatarUpload(AbstractPostgresTest):
         response = self._upload_avatar("user-avatar-1", image_bytes, "image/png")
 
         assert response.status_code == 200, response.text
+        body = response.json()
 
-        from config import AVATAR_DIR
-
-        with Image.open(os.path.join(AVATAR_DIR, "user-avatar-1.png")) as img:
-            assert img.width == 256
-            assert img.height == 128
+        assert body["width"] == 256
+        assert body["height"] == 128
 
     def test_upload_rejects_unsupported_format(self):
         """GIF and other unsupported MIME types must be rejected with HTTP 400."""
@@ -141,6 +147,7 @@ class TestAvatarUpload(AbstractPostgresTest):
         png_bytes = _create_image_bytes(100, 100, "PNG")
         r1 = self._upload_avatar("user-avatar-1", png_bytes, "image/png")
         assert r1.status_code == 200
+        assert r1.json()["url"] == "/avatars/user-avatar-1.png"
 
         old_path = os.path.join(AVATAR_DIR, "user-avatar-1.png")
         assert os.path.isfile(old_path)
@@ -155,8 +162,7 @@ class TestAvatarUpload(AbstractPostgresTest):
         new_path = os.path.join(AVATAR_DIR, "user-avatar-1.jpg")
         assert os.path.isfile(new_path), "New JPEG avatar was not created"
 
-        data = r2.json()
-        assert data["profile_image_url"] == "/avatars/user-avatar-1.jpg"
+        assert r2.json()["url"] == "/avatars/user-avatar-1.jpg"
 
     def test_upload_updates_profile_image_url_in_db(self):
         """After a successful upload the user record must reflect the new URL."""
@@ -175,6 +181,9 @@ class TestAvatarUpload(AbstractPostgresTest):
         response = self._upload_avatar("user-avatar-1", image_bytes, "image/png")
 
         assert response.status_code == 200
+        body = response.json()
+        assert body["width"] == 64
+        assert body["height"] == 64
 
         from config import AVATAR_DIR
 
