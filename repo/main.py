@@ -905,9 +905,10 @@ async def commit_session_after_request(request: Request, call_next):
 @app.middleware("http")
 async def check_url(request: Request, call_next):
     if len(app.state.MODELS) == 0:
-        await get_all_models()
-    else:
-        pass
+        try:
+            await get_all_models()
+        except Exception as e:
+            log.warning(f"get_all_models() failed during check_url middleware: {e}")
 
     start_time = int(time.time())
     response = await call_next(request)
@@ -2209,9 +2210,15 @@ async def upload_avatar(
 
     Returns JSON: { "url": "/avatars/<filename>", "width": <int>, "height": <int> }
     """
+    log.info(
+        f"Avatar upload: user={'authenticated uid=' + user.id if user else 'anonymous'}, "
+        f"filename={file.filename!r}, content_type={file.content_type!r}"
+    )
+
     # ── 1. Validate content type ──────────────────────────────────────────────
     content_type = file.content_type
     if content_type not in _AVATAR_ALLOWED_CONTENT_TYPES:
+        log.warning(f"Avatar upload rejected: unsupported content_type={content_type!r}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.INVALID_IMAGE_FORMAT,
@@ -2227,6 +2234,10 @@ async def upload_avatar(
         # Verify the actual Pillow-detected format matches the declared MIME type
         actual_format = (image.format or "").upper()
         if actual_format != pil_format.upper():
+            log.warning(
+                f"Avatar upload rejected: declared={content_type!r} "
+                f"but Pillow detected format={actual_format!r}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=ERROR_MESSAGES.INVALID_IMAGE_FORMAT,
@@ -2272,6 +2283,7 @@ async def upload_avatar(
         if user is not None:
             Users.update_user_profile_image_url_by_id(user.id, profile_image_url)
 
+        log.info(f"Avatar upload success: url={profile_image_url!r}, size={final_width}x{final_height}")
         return AvatarUploadResponse(
             url=profile_image_url,
             width=final_width,
@@ -2281,7 +2293,7 @@ async def upload_avatar(
     except HTTPException:
         raise
     except Exception as e:
-        log.exception(e)
+        log.exception(f"Avatar upload unexpected error: {e}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.DEFAULT(e),
