@@ -1,20 +1,20 @@
 import base64
+import inspect
 import io
+import json
+import logging
+import mimetypes
+import os
+import shutil
+import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 
 from authlib.integrations.starlette_client import OAuth
 from authlib.oidc.core import UserInfo
-import json
-import time
-import os
-import sys
-import logging
 import aiohttp
 import requests
-import mimetypes
-import shutil
-import inspect
 
 from fastapi import FastAPI, Request, Depends, status, UploadFile, File, Form
 from fastapi.security import HTTPAuthorizationCredentials
