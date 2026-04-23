@@ -2,6 +2,7 @@ from fastapi import Response, Request
 from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File
 from datetime import datetime, timedelta
 from typing import List, Union, Optional
+import io
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -9,6 +10,8 @@ import time
 import uuid
 import logging
 import os
+
+from PIL import Image
 
 from apps.webui.models.users import (
     UserModel,
@@ -153,9 +156,6 @@ async def upload_user_avatar_by_session_user(
 
     Returns JSON: { "url": "/avatars/<filename>", "width": <int>, "height": <int> }
     """
-    from PIL import Image
-    import io
-
     # ── 1. Validate content type ──────────────────────────────────────────────
     content_type = file.content_type
     if content_type not in AVATAR_ALLOWED_CONTENT_TYPES:

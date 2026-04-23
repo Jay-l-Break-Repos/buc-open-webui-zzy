@@ -1,4 +1,5 @@
 import base64
+import io
 import uuid
 from contextlib import asynccontextmanager
 
@@ -13,8 +14,6 @@ import aiohttp
 import requests
 import mimetypes
 import shutil
-import os
-import uuid
 import inspect
 
 from fastapi import FastAPI, Request, Depends, status, UploadFile, File, Form
@@ -23,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -2209,9 +2209,6 @@ async def upload_avatar(
 
     Returns JSON: { "url": "/avatars/<filename>", "width": <int>, "height": <int> }
     """
-    from PIL import Image
-    import io
-
     # ── 1. Validate content type ──────────────────────────────────────────────
     content_type = file.content_type
     if content_type not in _AVATAR_ALLOWED_CONTENT_TYPES:
