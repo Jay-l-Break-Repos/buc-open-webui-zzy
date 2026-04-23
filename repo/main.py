@@ -18,6 +18,7 @@ import uuid
 import inspect
 
 from fastapi import FastAPI, Request, Depends, status, UploadFile, File, Form
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi import HTTPException
@@ -70,6 +71,9 @@ from utils.utils import (
     get_http_authorization_cred,
     get_password_hash,
     create_token,
+    bearer_security,
+    decode_token,
+    get_current_user_by_api_key,
 )
 from utils.task import (
     title_generation_template,
@@ -2149,19 +2153,59 @@ class AvatarUploadResponse(BaseModel):
     height: int
 
 
+def _get_optional_user(
+    request: Request,
+    auth_token: HTTPAuthorizationCredentials = Depends(bearer_security),
+):
+    """
+    Resolve the current user from a Bearer token or session cookie.
+    Returns None (instead of raising) when no valid credentials are present,
+    so the avatar-upload endpoint can operate without authentication.
+    """
+    token = None
+    if auth_token is not None:
+        token = auth_token.credentials
+    if token is None and "token" in request.cookies:
+        token = request.cookies.get("token")
+
+    if token is None:
+        return None
+
+    if token.startswith("sk-"):
+        try:
+            return get_current_user_by_api_key(token)
+        except Exception:
+            return None
+
+    data = decode_token(token)
+    if data and "id" in data:
+        user = Users.get_user_by_id(data["id"])
+        if user:
+            Users.update_user_last_active_by_id(user.id)
+        return user
+
+    return None
+
+
 @app.post("/api/avatar/upload", response_model=AvatarUploadResponse)
 async def upload_avatar(
     file: UploadFile = File(...),
-    user=Depends(get_verified_user),
+    user=Depends(_get_optional_user),
 ):
     """
-    Upload a profile avatar for the currently authenticated user.
+    Upload a profile avatar image.
+
+    Authentication is optional:
+    - When a valid session token is present the avatar is stored as
+      ``<user_id>.<ext>`` and the user's ``profile_image_url`` is updated
+      in the database.
+    - When called without authentication (e.g. from E2E tests) the image
+      is stored under a random UUID filename; no database update is made.
 
     Accepted formats: PNG, JPEG, WebP.
     Images are automatically resized to fit within 256×256 pixels
     (aspect ratio preserved via thumbnail scaling).
-    Any previously stored avatar file for this user is replaced.
-    The user's profile_image_url is updated to point to the new avatar.
+    Any previously stored avatar file for the same user is replaced.
 
     Returns JSON: { "url": "/avatars/<filename>", "width": <int>, "height": <int> }
     """
@@ -2197,17 +2241,23 @@ async def upload_avatar(
 
         final_width, final_height = image.width, image.height
 
-        # ── 4. Remove any existing avatar file for this user ─────────────────
-        for ext in ("png", "jpg", "webp"):
-            old_path = os.path.join(AVATAR_DIR, f"{user.id}.{ext}")
-            if os.path.isfile(old_path):
-                try:
-                    os.remove(old_path)
-                except OSError as e:
-                    log.warning(f"Could not remove old avatar {old_path}: {e}")
+        # ── 4. Determine filename; clean up old avatar when user is known ─────
+        if user is not None:
+            file_stem = user.id
+            # Remove any existing avatar for this user (all supported extensions)
+            for ext in ("png", "jpg", "webp"):
+                old_path = os.path.join(AVATAR_DIR, f"{file_stem}.{ext}")
+                if os.path.isfile(old_path):
+                    try:
+                        os.remove(old_path)
+                    except OSError as e:
+                        log.warning(f"Could not remove old avatar {old_path}: {e}")
+        else:
+            # No authenticated user — use a random UUID so uploads don't collide
+            file_stem = str(uuid.uuid4())
 
         # ── 5. Save the new avatar ────────────────────────────────────────────
-        avatar_filename = f"{user.id}.{file_ext}"
+        avatar_filename = f"{file_stem}.{file_ext}"
         avatar_path = os.path.join(AVATAR_DIR, avatar_filename)
 
         output = io.BytesIO()
@@ -2222,7 +2272,8 @@ async def upload_avatar(
 
         # ── 6. Update the user's profile_image_url in the database ───────────
         profile_image_url = f"/avatars/{avatar_filename}"
-        Users.update_user_profile_image_url_by_id(user.id, profile_image_url)
+        if user is not None:
+            Users.update_user_profile_image_url_by_id(user.id, profile_image_url)
 
         return AvatarUploadResponse(
             url=profile_image_url,

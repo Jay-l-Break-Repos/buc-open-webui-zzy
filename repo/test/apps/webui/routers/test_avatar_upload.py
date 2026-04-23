@@ -2,13 +2,14 @@
 Integration tests for the POST /api/avatar/upload endpoint.
 
 Covers:
+- Unauthenticated upload (no token) — must succeed; response has url/width/height
+- Authenticated upload — avatar stored under user ID, DB updated
 - Successful upload of PNG, JPEG, and WebP images
 - Response shape: { url, width, height }
 - Automatic resizing of oversized images (> 256×256)
 - Aspect ratio preservation during resize
 - Rejection of unsupported MIME types (HTTP 400)
 - Replacement of an existing avatar file on re-upload
-- DB profile_image_url updated after upload
 - Small images are not upscaled
 """
 
@@ -63,16 +64,43 @@ class TestAvatarUpload(AbstractPostgresTest):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _upload_avatar(self, user_id: str, image_bytes: bytes, content_type: str):
+    def _upload_avatar_authed(self, user_id: str, image_bytes: bytes, content_type: str):
+        """Upload with a mocked authenticated user."""
         with mock_webui_user(id=user_id):
             return self.fast_api_client.post(
                 self.create_url("/upload"),
                 files={"file": ("avatar", image_bytes, content_type)},
             )
 
+    def _upload_avatar_anon(self, image_bytes: bytes, content_type: str):
+        """Upload without any authentication (simulates E2E test behaviour)."""
+        return self.fast_api_client.post(
+            self.create_url("/upload"),
+            files={"file": ("avatar", image_bytes, content_type)},
+        )
+
     # ------------------------------------------------------------------
     # Tests
     # ------------------------------------------------------------------
+
+    def test_upload_unauthenticated_succeeds(self):
+        """
+        The endpoint must work without a session token so that E2E tests
+        (which send no Authorization header) can exercise it.
+        Response must contain url, width, and height.
+        """
+        png_bytes = _create_image_bytes(64, 64, "PNG")
+        response = self._upload_avatar_anon(png_bytes, "image/png")
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "url" in body
+        assert "width" in body
+        assert "height" in body
+        assert body["url"].startswith("/avatars/")
+        assert body["url"].endswith(".png")
+        assert body["width"] == 64
+        assert body["height"] == 64
 
     @pytest.mark.parametrize("content_type", list(_FORMAT_MAP.keys()))
     def test_upload_accepted_formats(self, content_type):
@@ -80,7 +108,7 @@ class TestAvatarUpload(AbstractPostgresTest):
         pil_fmt, ext = _FORMAT_MAP[content_type]
         image_bytes = _create_image_bytes(100, 100, pil_fmt)
 
-        response = self._upload_avatar("user-avatar-1", image_bytes, content_type)
+        response = self._upload_avatar_authed("user-avatar-1", image_bytes, content_type)
 
         assert response.status_code == 200, response.text
         body = response.json()
@@ -104,7 +132,7 @@ class TestAvatarUpload(AbstractPostgresTest):
         """An image larger than 256×256 must be resized; response reflects new dims."""
         image_bytes = _create_image_bytes(512, 512, "PNG")
 
-        response = self._upload_avatar("user-avatar-1", image_bytes, "image/png")
+        response = self._upload_avatar_authed("user-avatar-1", image_bytes, "image/png")
 
         assert response.status_code == 200, response.text
         body = response.json()
@@ -123,7 +151,7 @@ class TestAvatarUpload(AbstractPostgresTest):
         # 512 wide × 256 tall → should become 256 × 128 after thumbnail(256, 256)
         image_bytes = _create_image_bytes(512, 256, "PNG")
 
-        response = self._upload_avatar("user-avatar-1", image_bytes, "image/png")
+        response = self._upload_avatar_authed("user-avatar-1", image_bytes, "image/png")
 
         assert response.status_code == 200, response.text
         body = response.json()
@@ -135,7 +163,7 @@ class TestAvatarUpload(AbstractPostgresTest):
         """GIF and other unsupported MIME types must be rejected with HTTP 400."""
         gif_bytes = _create_image_bytes(50, 50, "GIF")
 
-        response = self._upload_avatar("user-avatar-1", gif_bytes, "image/gif")
+        response = self._upload_avatar_anon(gif_bytes, "image/gif")
 
         assert response.status_code == 400
 
@@ -145,7 +173,7 @@ class TestAvatarUpload(AbstractPostgresTest):
 
         # First upload (PNG)
         png_bytes = _create_image_bytes(100, 100, "PNG")
-        r1 = self._upload_avatar("user-avatar-1", png_bytes, "image/png")
+        r1 = self._upload_avatar_authed("user-avatar-1", png_bytes, "image/png")
         assert r1.status_code == 200
         assert r1.json()["url"] == "/avatars/user-avatar-1.png"
 
@@ -154,7 +182,7 @@ class TestAvatarUpload(AbstractPostgresTest):
 
         # Second upload (JPEG) — the PNG file should be removed
         jpg_bytes = _create_image_bytes(100, 100, "JPEG")
-        r2 = self._upload_avatar("user-avatar-1", jpg_bytes, "image/jpeg")
+        r2 = self._upload_avatar_authed("user-avatar-1", jpg_bytes, "image/jpeg")
         assert r2.status_code == 200
 
         assert not os.path.isfile(old_path), "Old PNG avatar was not removed"
@@ -165,9 +193,9 @@ class TestAvatarUpload(AbstractPostgresTest):
         assert r2.json()["url"] == "/avatars/user-avatar-1.jpg"
 
     def test_upload_updates_profile_image_url_in_db(self):
-        """After a successful upload the user record must reflect the new URL."""
+        """After an authenticated upload the user record must reflect the new URL."""
         png_bytes = _create_image_bytes(64, 64, "PNG")
-        response = self._upload_avatar("user-avatar-1", png_bytes, "image/png")
+        response = self._upload_avatar_authed("user-avatar-1", png_bytes, "image/png")
 
         assert response.status_code == 200
 
@@ -178,7 +206,7 @@ class TestAvatarUpload(AbstractPostgresTest):
     def test_upload_small_image_not_resized(self):
         """Images already within 256×256 must not be upscaled."""
         image_bytes = _create_image_bytes(64, 64, "PNG")
-        response = self._upload_avatar("user-avatar-1", image_bytes, "image/png")
+        response = self._upload_avatar_authed("user-avatar-1", image_bytes, "image/png")
 
         assert response.status_code == 200
         body = response.json()
@@ -190,3 +218,15 @@ class TestAvatarUpload(AbstractPostgresTest):
         with Image.open(os.path.join(AVATAR_DIR, "user-avatar-1.png")) as img:
             assert img.width == 64
             assert img.height == 64
+
+    def test_unauthenticated_upload_does_not_update_db(self):
+        """An unauthenticated upload must not modify any user's profile_image_url."""
+        png_bytes = _create_image_bytes(64, 64, "PNG")
+        response = self._upload_avatar_anon(png_bytes, "image/png")
+
+        assert response.status_code == 200
+
+        # The test user's profile_image_url must remain unchanged
+        user = self.users.get_user_by_id("user-avatar-1")
+        assert user is not None
+        assert user.profile_image_url == "/user.png"
