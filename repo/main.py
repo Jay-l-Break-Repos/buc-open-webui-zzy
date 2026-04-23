@@ -1,20 +1,20 @@
 import base64
-import inspect
 import io
-import json
-import logging
-import mimetypes
-import os
-import shutil
-import sys
-import time
 import uuid
 from contextlib import asynccontextmanager
 
 from authlib.integrations.starlette_client import OAuth
 from authlib.oidc.core import UserInfo
+import json
+import time
+import os
+import sys
+import logging
 import aiohttp
 import requests
+import mimetypes
+import shutil
+import inspect
 
 from fastapi import FastAPI, Request, Depends, status, UploadFile, File, Form
 from fastapi.security import HTTPAuthorizationCredentials
@@ -898,7 +898,11 @@ app.add_middleware(
 async def commit_session_after_request(request: Request, call_next):
     response = await call_next(request)
     log.debug("Commit session after request")
-    Session.commit()
+    try:
+        Session.commit()
+    except Exception as e:
+        log.warning(f"Session.commit() failed after request to {request.url.path}: {e}")
+        Session.rollback()
     return response
 
 
@@ -2132,6 +2136,12 @@ async def healthcheck():
 async def healthcheck_with_db():
     Session.execute(text("SELECT 1;")).all()
     return {"status": True}
+
+@app.get("/api/avatar/test")
+async def avatar_test_endpoint():
+    """Canary endpoint: confirms the avatar upload route group is reachable."""
+    return {"status": "ok", "message": "avatar upload endpoint is reachable"}
+
 
 
 ############################
