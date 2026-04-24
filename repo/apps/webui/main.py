@@ -17,6 +17,7 @@ from apps.webui.routers import (
     utils,
     files,
     functions,
+    settings,
 )
 from apps.webui.models.functions import Functions
 from apps.webui.models.models import Models
@@ -46,6 +47,7 @@ from config import (
     AppConfig,
     OAUTH_USERNAME_CLAIM,
     OAUTH_PICTURE_CLAIM,
+    AVATAR_DIR,
 )
 
 import inspect
@@ -55,6 +57,7 @@ import json
 
 from typing import Iterator, Generator
 from pydantic import BaseModel
+from fastapi.staticfiles import StaticFiles
 
 app = FastAPI()
 
@@ -112,6 +115,13 @@ app.include_router(tools.router, prefix="/tools", tags=["tools"])
 app.include_router(functions.router, prefix="/functions", tags=["functions"])
 
 app.include_router(utils.router, prefix="/utils", tags=["utils"])
+
+app.include_router(settings.router, prefix="/settings", tags=["settings"])
+
+# Serve uploaded avatar images at /avatars/<filename>
+import os as _os
+_os.makedirs(AVATAR_DIR, exist_ok=True)
+app.mount("/avatars", StaticFiles(directory=AVATAR_DIR), name="avatars")
 
 
 @app.get("/")
