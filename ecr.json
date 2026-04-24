@@ -1,0 +1,47 @@
+{
+  "vuln_id": "GHSA-wcwp-9rcp-jvfg",
+  "ecosystem": "PyPI",
+  "package": "open-webui",
+  "setup_complexity": "direct",
+  "app_port": 8080,
+  "env": {
+    "ENV": "prod",
+    "PORT": "8080",
+    "USE_OLLAMA_DOCKER": "false",
+    "USE_CUDA_DOCKER": "false",
+    "USE_CUDA_DOCKER_VER": "cu121",
+    "USE_EMBEDDING_MODEL_DOCKER": "sentence-transformers/all-MiniLM-L6-v2",
+    "USE_RERANKING_MODEL_DOCKER": "",
+    "OLLAMA_BASE_URL": "/ollama",
+    "OPENAI_API_BASE_URL": "",
+    "OPENAI_API_KEY": "",
+    "WEBUI_SECRET_KEY": "",
+    "SCARF_NO_ANALYTICS": "true",
+    "DO_NOT_TRACK": "true",
+    "ANONYMIZED_TELEMETRY": "false",
+    "WHISPER_MODEL": "base",
+    "WHISPER_MODEL_DIR": "/app/backend/data/cache/whisper/models",
+    "RAG_EMBEDDING_MODEL": "sentence-transformers/all-MiniLM-L6-v2",
+    "RAG_RERANKING_MODEL": "",
+    "SENTENCE_TRANSFORMERS_HOME": "/app/backend/data/cache/embedding/models",
+    "HF_HOME": "/app/backend/data/cache/embedding/models",
+    "WEBUI_BUILD_VERSION": "dev-build"
+  },
+  "sidecars": [],
+  "url": "http://localhost:8080",
+  "pushed_at": "2026-04-17T01:38:46.651507+00:00",
+  "dockerhub": {
+    "image": "brookeyangr/vulndock:ghsa-wcwp-9rcp-jvfg",
+    "pull": [
+      "docker pull brookeyangr/vulndock:ghsa-wcwp-9rcp-jvfg"
+    ],
+    "run": "docker run -d -p 8080:8080 -e ENV=prod -e PORT=8080 -e USE_OLLAMA_DOCKER=false -e USE_CUDA_DOCKER=false -e USE_CUDA_DOCKER_VER=cu121 -e USE_EMBEDDING_MODEL_DOCKER=sentence-transformers/all-MiniLM-L6-v2 -e USE_RERANKING_MODEL_DOCKER= -e OLLAMA_BASE_URL=/ollama -e OPENAI_API_BASE_URL= -e OPENAI_API_KEY= -e WEBUI_SECRET_KEY= -e SCARF_NO_ANALYTICS=true -e DO_NOT_TRACK=true -e ANONYMIZED_TELEMETRY=false -e WHISPER_MODEL=base -e WHISPER_MODEL_DIR=/app/backend/data/cache/whisper/models -e RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 -e RAG_RERANKING_MODEL= -e SENTENCE_TRANSFORMERS_HOME=/app/backend/data/cache/embedding/models -e HF_HOME=/app/backend/data/cache/embedding/models -e WEBUI_BUILD_VERSION=dev-build --name ghsa-wcwp-9rcp-jvfg brookeyangr/vulndock:ghsa-wcwp-9rcp-jvfg"
+  },
+  "ecr": {
+    "image": "995133654082.dkr.ecr.us-east-1.amazonaws.com/vuldock/ghsa-1000:ghsa-wcwp-9rcp-jvfg",
+    "pull": [
+      "docker pull 995133654082.dkr.ecr.us-east-1.amazonaws.com/vuldock/ghsa-1000:ghsa-wcwp-9rcp-jvfg"
+    ],
+    "run": "docker run -d -p 8080:8080 -e ENV=prod -e PORT=8080 -e USE_OLLAMA_DOCKER=false -e USE_CUDA_DOCKER=false -e USE_CUDA_DOCKER_VER=cu121 -e USE_EMBEDDING_MODEL_DOCKER=sentence-transformers/all-MiniLM-L6-v2 -e USE_RERANKING_MODEL_DOCKER= -e OLLAMA_BASE_URL=/ollama -e OPENAI_API_BASE_URL= -e OPENAI_API_KEY= -e WEBUI_SECRET_KEY= -e SCARF_NO_ANALYTICS=true -e DO_NOT_TRACK=true -e ANONYMIZED_TELEMETRY=false -e WHISPER_MODEL=base -e WHISPER_MODEL_DIR=/app/backend/data/cache/whisper/models -e RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 -e RAG_RERANKING_MODEL= -e SENTENCE_TRANSFORMERS_HOME=/app/backend/data/cache/embedding/models -e HF_HOME=/app/backend/data/cache/embedding/models -e WEBUI_BUILD_VERSION=dev-build --name ghsa-wcwp-9rcp-jvfg 995133654082.dkr.ecr.us-east-1.amazonaws.com/vuldock/ghsa-1000:ghsa-wcwp-9rcp-jvfg"
+  }
+}
