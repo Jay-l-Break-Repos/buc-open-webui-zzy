@@ -521,6 +521,13 @@ if CUSTOM_NAME:
 UPLOAD_DIR = f"{DATA_DIR}/uploads"
 Path(UPLOAD_DIR).mkdir(parents=True, exist_ok=True)
 
+####################################
+# Avatar Upload DIR
+####################################
+
+AVATAR_DIR = f"{DATA_DIR}/avatars"
+Path(AVATAR_DIR).mkdir(parents=True, exist_ok=True)
+
 
 ####################################
 # Cache DIR

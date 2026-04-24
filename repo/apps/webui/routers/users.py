@@ -1,5 +1,5 @@
 from fastapi import Response, Request
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status, UploadFile, File
 from datetime import datetime, timedelta
 from typing import List, Union, Optional
 
@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import time
 import uuid
 import logging
+import os
 
 from apps.webui.models.users import (
     UserModel,
@@ -27,7 +28,7 @@ from utils.utils import (
 )
 from constants import ERROR_MESSAGES
 
-from config import SRC_LOG_LEVELS
+from config import SRC_LOG_LEVELS, AVATAR_DIR
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["MODELS"])
@@ -158,6 +159,110 @@ async def update_user_info_by_session_user(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=ERROR_MESSAGES.USER_NOT_FOUND,
+        )
+
+
+############################
+# UploadUserAvatar
+############################
+
+# Allowed MIME types and their corresponding file extensions
+ALLOWED_AVATAR_TYPES = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+}
+
+# Maximum output dimensions for resized avatars
+AVATAR_MAX_SIZE = (256, 256)
+
+
+@router.post("/user/avatar", response_model=UserModel)
+async def upload_user_avatar(
+    file: UploadFile = File(...),
+    user=Depends(get_verified_user),
+):
+    """
+    Upload and store a profile avatar for the authenticated user.
+
+    Accepts PNG, JPEG, or WebP images only. The image is resized to fit
+    within 256x256 pixels (preserving aspect ratio) before being saved.
+    Any previously stored avatar for the user is replaced.
+    """
+    # ── 1. Validate content type ──────────────────────────────────────────────
+    content_type = file.content_type or ""
+    if content_type not in ALLOWED_AVATAR_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.AVATAR_FORMAT_NOT_SUPPORTED,
+        )
+
+    try:
+        from PIL import Image
+        import io
+
+        # ── 2. Read & decode the uploaded image ───────────────────────────────
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+
+        # Verify the actual image format matches the declared content type
+        pil_format = (image.format or "").upper()
+        format_map = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}
+        if format_map.get(pil_format) != content_type:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.AVATAR_FORMAT_NOT_SUPPORTED,
+            )
+
+        # ── 3. Resize to max 256x256 (thumbnail preserves aspect ratio) ───────
+        image.thumbnail(AVATAR_MAX_SIZE, Image.LANCZOS)
+
+        # ── 4. Remove any existing avatar file for this user ──────────────────
+        existing_user = Users.get_user_by_id(user.id)
+        if existing_user and existing_user.profile_image_url:
+            old_url = existing_user.profile_image_url
+            # Only remove files we stored ourselves (paths starting with /avatars/)
+            if old_url.startswith("/avatars/"):
+                old_filename = old_url.split("/avatars/", 1)[-1]
+                old_path = os.path.join(AVATAR_DIR, old_filename)
+                if os.path.isfile(old_path):
+                    try:
+                        os.remove(old_path)
+                    except OSError as remove_err:
+                        log.warning(
+                            f"Could not remove old avatar '{old_path}': {remove_err}"
+                        )
+
+        # ── 5. Persist the resized image ──────────────────────────────────────
+        ext = ALLOWED_AVATAR_TYPES[content_type]
+        avatar_filename = f"{user.id}.{ext}"
+        avatar_path = os.path.join(AVATAR_DIR, avatar_filename)
+
+        # JPEG requires RGB mode (no alpha channel)
+        save_format = pil_format  # PNG / JPEG / WEBP
+        if save_format == "JPEG" and image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+        image.save(avatar_path, format=save_format)
+
+        # ── 6. Update the user record with the new avatar URL ─────────────────
+        avatar_url = f"/avatars/{avatar_filename}"
+        updated_user = Users.update_user_profile_image_url_by_id(user.id, avatar_url)
+
+        if updated_user:
+            return updated_user
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.AVATAR_UPLOAD_FAILED,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=ERROR_MESSAGES.AVATAR_UPLOAD_FAILED,
         )
 
 
