@@ -1,27 +1,27 @@
 import base64
+import inspect
+import io
+import json
+import logging
+import mimetypes
+import os
+import shutil
+import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 
-from authlib.integrations.starlette_client import OAuth
-from authlib.oidc.core import UserInfo
-import json
-import time
-import os
-import sys
-import logging
 import aiohttp
 import requests
-import mimetypes
-import shutil
-import os
-import uuid
-import inspect
-
+from authlib.integrations.starlette_client import OAuth
+from authlib.oidc.core import UserInfo
 from fastapi import FastAPI, Request, Depends, status, UploadFile, File, Form
+from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image
 from sqlalchemy import text
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -70,6 +70,9 @@ from utils.utils import (
     get_http_authorization_cred,
     get_password_hash,
     create_token,
+    bearer_security,
+    decode_token,
+    get_current_user_by_api_key,
 )
 from utils.task import (
     title_generation_template,
@@ -118,6 +121,7 @@ from config import (
     WEBUI_SESSION_COOKIE_SAME_SITE,
     WEBUI_SESSION_COOKIE_SECURE,
     AppConfig,
+    AVATAR_DIR,
 )
 
 from constants import ERROR_MESSAGES, WEBHOOK_MESSAGES, TASKS
@@ -2128,8 +2132,184 @@ async def healthcheck_with_db():
     return {"status": True}
 
 
+############################
+# Avatar Upload
+############################
+
+# Accepted MIME types → (Pillow format name, file extension)
+_AVATAR_ALLOWED_CONTENT_TYPES = {
+    "image/png": ("PNG", "png"),
+    "image/jpeg": ("JPEG", "jpg"),
+    "image/webp": ("WEBP", "webp"),
+}
+
+# Maximum width or height in pixels for stored avatars
+_AVATAR_MAX_SIZE = 256
+
+
+class AvatarUploadResponse(BaseModel):
+    url: str
+    width: int
+    height: int
+
+
+def _get_optional_user(
+    request: Request,
+    auth_token: HTTPAuthorizationCredentials = Depends(bearer_security),
+):
+    """
+    Resolve the current user from a Bearer token or session cookie.
+    Returns None (instead of raising) when no valid credentials are present,
+    so the avatar-upload endpoint can operate without authentication.
+    """
+    token = None
+    if auth_token is not None:
+        token = auth_token.credentials
+    if token is None and "token" in request.cookies:
+        token = request.cookies.get("token")
+
+    if token is None:
+        return None
+
+    if token.startswith("sk-"):
+        try:
+            return get_current_user_by_api_key(token)
+        except Exception:
+            return None
+
+    data = decode_token(token)
+    if data and "id" in data:
+        user = Users.get_user_by_id(data["id"])
+        if user:
+            Users.update_user_last_active_by_id(user.id)
+        return user
+
+    return None
+
+
+@app.get("/api/avatar")
+async def avatar_base_endpoint():
+    """Base avatar endpoint — confirms the route group is reachable."""
+    return {"status": "ok"}
+
+
+@app.post("/api/avatar/upload", response_model=AvatarUploadResponse)
+async def upload_avatar(
+    file: UploadFile = File(...),
+    user=Depends(_get_optional_user),
+):
+    """
+    Upload a profile avatar image.
+
+    Accepted formats: PNG, JPEG, WebP.
+    Images are automatically resized to fit within 256×256 pixels
+    (aspect ratio preserved via thumbnail scaling; small images are not upscaled).
+    Any previously stored avatar file for the same user is replaced — no orphaned files.
+
+    Authentication is optional:
+    - When a valid session token is present the avatar is stored as
+      ``<user_id>.<ext>`` and the user's ``profile_image_url`` is updated in the DB.
+    - When called without authentication the image is stored under a random UUID
+      filename; no database update is made.
+
+    Returns JSON: { "url": "/avatars/<filename>", "width": <int>, "height": <int> }
+    """
+    log.info(
+        f"Avatar upload request: user={'uid=' + user.id if user else 'anonymous'}, "
+        f"filename={file.filename!r}, content_type={file.content_type!r}"
+    )
+
+    # ── 1. Validate content type ──────────────────────────────────────────────
+    content_type = file.content_type
+    if content_type not in _AVATAR_ALLOWED_CONTENT_TYPES:
+        log.warning(f"Avatar upload rejected: unsupported content_type={content_type!r}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.INVALID_IMAGE_FORMAT,
+        )
+
+    pil_format, file_ext = _AVATAR_ALLOWED_CONTENT_TYPES[content_type]
+
+    try:
+        # ── 2. Read and open the image ────────────────────────────────────────
+        contents = await file.read()
+        image = Image.open(io.BytesIO(contents))
+
+        # Cross-check: Pillow-detected format must match the declared MIME type
+        actual_format = (image.format or "").upper()
+        if actual_format != pil_format.upper():
+            log.warning(
+                f"Avatar upload rejected: declared={content_type!r} "
+                f"but Pillow detected format={actual_format!r}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=ERROR_MESSAGES.INVALID_IMAGE_FORMAT,
+            )
+
+        # ── 3. Resize if necessary (cap at _AVATAR_MAX_SIZE × _AVATAR_MAX_SIZE) ─
+        if image.width > _AVATAR_MAX_SIZE or image.height > _AVATAR_MAX_SIZE:
+            image.thumbnail((_AVATAR_MAX_SIZE, _AVATAR_MAX_SIZE), Image.LANCZOS)
+
+        final_width, final_height = image.width, image.height
+
+        # ── 4. Determine filename; clean up old avatar when user is known ─────
+        if user is not None:
+            file_stem = user.id
+            # Remove any existing avatar for this user (all supported extensions)
+            for ext in ("png", "jpg", "webp"):
+                old_path = os.path.join(AVATAR_DIR, f"{file_stem}.{ext}")
+                if os.path.isfile(old_path):
+                    try:
+                        os.remove(old_path)
+                    except OSError as e:
+                        log.warning(f"Could not remove old avatar {old_path}: {e}")
+        else:
+            # No authenticated user — use a random UUID so uploads don't collide
+            file_stem = str(uuid.uuid4())
+
+        # ── 5. Save the new avatar ────────────────────────────────────────────
+        avatar_filename = f"{file_stem}.{file_ext}"
+        avatar_path = os.path.join(AVATAR_DIR, avatar_filename)
+
+        output = io.BytesIO()
+        # JPEG does not support transparency; convert if needed
+        if pil_format == "JPEG" and image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+        image.save(output, format=pil_format)
+        output.seek(0)
+
+        with open(avatar_path, "wb") as f:
+            f.write(output.read())
+
+        # ── 6. Update the user's profile_image_url in the database ───────────
+        profile_image_url = f"/avatars/{avatar_filename}"
+        if user is not None:
+            Users.update_user_profile_image_url_by_id(user.id, profile_image_url)
+
+        log.info(
+            f"Avatar upload success: url={profile_image_url!r}, "
+            f"size={final_width}x{final_height}"
+        )
+        return AvatarUploadResponse(
+            url=profile_image_url,
+            width=final_width,
+            height=final_height,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.exception(f"Avatar upload unexpected error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=ERROR_MESSAGES.DEFAULT(e),
+        )
+
+
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
+app.mount("/avatars", StaticFiles(directory=AVATAR_DIR), name="avatars")
 
 if os.path.exists(FRONTEND_BUILD_DIR):
     mimetypes.add_type("text/javascript", ".js")
